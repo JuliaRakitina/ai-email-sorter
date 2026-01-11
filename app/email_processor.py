@@ -24,6 +24,8 @@ def process_email_messages(
     message_ids: List[str],
     categories: List[Category],
     session: Session,
+    user,
+    get_uncategorized_func,
 ) -> int:
     batch_size = 5
     email_records = []
@@ -55,11 +57,21 @@ def process_email_messages(
             body_text, body_html = extract_bodies(full)
             received_at = parse_internal_date_ms(full)
 
-            chosen = choose_category(categories, subject, snippet, body_text or "")
+            user_categories = [c for c in categories if not c.is_system]
+            chosen = None
             category_id = None
-            if chosen:
-                match = next((c for c in categories if c.name == chosen), None)
-                category_id = match.id if match else None
+
+            if user_categories:
+                chosen = choose_category(
+                    user_categories, subject, snippet, body_text or ""
+                )
+                if chosen:
+                    match = next((c for c in user_categories if c.name == chosen), None)
+                    category_id = match.id if match else None
+
+            if not category_id:
+                uncategorized = get_uncategorized_func(session, user, gmail_account)
+                category_id = uncategorized.id
 
             summary = summarize_email(subject, from_email, body_text or snippet or "")
 
@@ -148,4 +160,3 @@ def process_email_messages(
             logger.warning(f"Failed to archive email {message_id}: {archive_error}")
 
     return processed
-

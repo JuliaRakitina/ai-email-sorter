@@ -5,7 +5,7 @@ from googleapiclient.discovery import Resource
 from googleapiclient.errors import HttpError
 from sqlmodel import Session, select
 
-from .models import GmailAccount, Category
+from .models import GmailAccount, Category, User
 from .gmail_service import list_message_ids
 from .email_processor import process_email_messages
 from .settings import settings
@@ -19,6 +19,8 @@ def sync_history(
     start_history_id: str,
     categories: List[Category],
     session: Session,
+    user: User,
+    get_uncategorized_func,
 ) -> Optional[str]:
     try:
         history_response = (
@@ -48,7 +50,13 @@ def sync_history(
 
         if message_ids:
             processed = process_email_messages(
-                gmail_service, gmail_account, message_ids, categories, session
+                gmail_service,
+                gmail_account,
+                message_ids,
+                categories,
+                session,
+                user,
+                get_uncategorized_func,
             )
             logger.info(
                 f"History sync processed {processed} emails for {gmail_account.email}"
@@ -70,7 +78,12 @@ def sync_history(
                 f"Invalid startHistoryId for {gmail_account.email}, falling back to query sync"
             )
             return fallback_query_sync(
-                gmail_service, gmail_account, categories, session
+                gmail_service,
+                gmail_account,
+                categories,
+                session,
+                user,
+                get_uncategorized_func,
             )
         raise
     except Exception as e:
@@ -83,6 +96,8 @@ def fallback_query_sync(
     gmail_account: GmailAccount,
     categories: List[Category],
     session: Session,
+    user: User,
+    get_uncategorized_func,
 ) -> Optional[str]:
     try:
         ids = list_message_ids(
@@ -90,7 +105,13 @@ def fallback_query_sync(
         )
         if ids:
             process_email_messages(
-                gmail_service, gmail_account, ids, categories, session
+                gmail_service,
+                gmail_account,
+                ids,
+                categories,
+                session,
+                user,
+                get_uncategorized_func,
             )
 
         profile = gmail_service.users().getProfile(userId="me").execute()

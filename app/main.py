@@ -61,9 +61,34 @@ def render(request: Request, name: str, **ctx) -> HTMLResponse:
     return HTMLResponse(tpl.render(**ctx))
 
 
+def get_or_create_uncategorized(
+    session: Session, user: User, gmail_account: GmailAccount
+) -> Category:
+    existing = session.exec(
+        select(Category).where(
+            Category.user_id == user.id,
+            Category.gmail_account_id == gmail_account.id,
+            Category.name == "Uncategorized",
+            Category.is_system.is_(True),
+        )
+    ).first()
+    if existing:
+        return existing
+    uncategorized = Category(
+        user_id=user.id,
+        gmail_account_id=gmail_account.id,
+        name="Uncategorized",
+        description="Emails not categorized yet",
+        is_system=True,
+    )
+    session.add(uncategorized)
+    session.commit()
+    session.refresh(uncategorized)
+    return uncategorized
+
+
 @app.on_event("startup")
 def _startup():
-    # Warn if SECRET_KEY is still the default value
     if settings.SECRET_KEY == "change-me":
         logger.warning(
             "SECRET_KEY is still the default value 'change-me'. "
@@ -105,8 +130,12 @@ def home(request: Request, session: Session = Depends(get_session)):
     categories = session.exec(
         select(Category)
         .where(Category.gmail_account_id == active_gmail.id)
-        .order_by(Category.created_at.desc())
+        .order_by(Category.is_system.asc(), Category.created_at.desc())
     ).all()
+
+    uncategorized = get_or_create_uncategorized(session, user, active_gmail)
+    if uncategorized.id not in [c.id for c in categories]:
+        categories.insert(0, uncategorized)
 
     counts = {}
     if categories:
@@ -144,14 +173,10 @@ async def auth_google_callback(
     try:
         data = await oauth_callback(request)
     except ValueError as e:
-        # Log the actual error for debugging
         logger.error(f"OAuth callback error: {e}")
-        print(f"OAuth callback error: {e}")  # Also print to console for visibility
-        # OAuth error (e.g., state mismatch) - redirect to home
-        # Check: SECRET_KEY, redirect_uri matches Google Console, session cookies enabled
+        print(f"OAuth callback error: {e}")
         return RedirectResponse("/?error=oauth_failed", status_code=HTTP_303_SEE_OTHER)
     except Exception as e:
-        # Catch any other unexpected errors
         logger.error(f"Unexpected OAuth error: {e}", exc_info=True)
         print(f"Unexpected OAuth error: {e}")
         return RedirectResponse("/?error=oauth_failed", status_code=HTTP_303_SEE_OTHER)
@@ -424,7 +449,13 @@ def sync_now(request: Request, session: Session = Depends(get_session)):
             print(f"Error syncing emails for {ga.email}: {e}")
         return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
 
-    process_email_messages(gmail, ga, ids, categories, session)
+    uncategorized = get_or_create_uncategorized(session, user, ga)
+    if uncategorized.id not in [c.id for c in categories]:
+        categories.append(uncategorized)
+
+    process_email_messages(
+        gmail, ga, ids, categories, session, user, get_or_create_uncategorized
+    )
 
     ga.last_sync_at = datetime.utcnow()
     session.add(ga)
@@ -493,7 +524,6 @@ def category_bulk(
     if not category or category.user_id != user.id:
         return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
 
-    # Pick first Gmail account for actions (records store gmail_account_id)
     for eid in email_ids:
         rec = session.get(EmailRecord, eid)
         if not rec or rec.category_id != category_id:
@@ -525,7 +555,6 @@ def category_bulk(
                 ok, msg = best_effort_unsubscribe(client, headers, body_html or "")
             if ok:
                 rec.unsubscribed_at = datetime.utcnow()
-            # Store note in summary tail (simple)
             rec.summary = (rec.summary or "") + f"\n\n[Unsubscribe] {msg}"
             session.add(rec)
             session.commit()
@@ -614,6 +643,10 @@ async def pubsub_webhook(request: Request, session: Session = Depends(get_sessio
             select(Category).where(Category.gmail_account_id == gmail_account.id)
         ).all()
 
+        uncategorized = get_or_create_uncategorized(session, user, gmail_account)
+        if uncategorized.id not in [c.id for c in categories]:
+            categories.append(uncategorized)
+
         try:
             sync_history(
                 gmail,
@@ -621,6 +654,8 @@ async def pubsub_webhook(request: Request, session: Session = Depends(get_sessio
                 gmail_account.last_history_id,
                 categories,
                 session,
+                user,
+                get_or_create_uncategorized,
             )
             if history_id:
                 gmail_account.last_history_id = history_id

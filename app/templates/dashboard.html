@@ -55,7 +55,12 @@
           {% for c in categories %}
             <a class="list-group-item list-group-item-action d-flex justify-content-between align-items-center" href="/categories/{{ c.id }}">
               <div>
-                <div class="fw-semibold">{{ c.name }}</div>
+                <div class="fw-semibold">
+                  {{ c.name }}
+                  {% if c.is_system %}
+                    <span class="badge bg-secondary ms-1">System</span>
+                  {% endif %}
+                </div>
                 <small class="text-muted">{{ c.description }}</small>
               </div>
               <span class="badge text-bg-secondary">{{ counts.get(c.id, 0) }}</span>

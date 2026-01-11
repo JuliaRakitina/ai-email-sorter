@@ -27,6 +27,7 @@ class Category(SQLModel, table=True):
     gmail_account_id: int = Field(foreign_key="gmailaccount.id", index=True)
     name: str = Field(index=True)
     description: str
+    is_system: bool = Field(default=False)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
