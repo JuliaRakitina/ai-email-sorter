@@ -3,8 +3,24 @@
 <a class="btn btn-link mb-2" href="/categories/{{ category_id }}">← Back to category</a>
 <div class="card shadow-sm">
   <div class="card-body">
-    <h3 class="card-title mb-1">{{ email.subject or "(no subject)" }}</h3>
+    <div class="d-flex justify-content-between align-items-start mb-2">
+      <h3 class="card-title mb-1">{{ email.subject or "(no subject)" }}</h3>
+      {% if email.unsubscribed_at %}
+        <span class="badge bg-success fs-6" title="Unsubscribed on {{ email.unsubscribed_at }}">✓ Unsubscribed</span>
+      {% endif %}
+    </div>
     <div class="text-muted mb-3">From: {{ email.from_email or "" }} • Received: {{ email.received_at or "" }}</div>
+    {% if email.unsubscribed_at %}
+      <div class="alert alert-success mb-3">
+        <strong>✓ Unsubscribed:</strong> This email was unsubscribed on {{ email.unsubscribed_at }}.
+        {% if email.summary and "[Unsubscribe]" in email.summary %}
+          <div class="mt-2">
+            <strong>Details:</strong>
+            <div class="small" style="white-space:pre-wrap;">{{ email.summary.split("[Unsubscribe]")[-1].strip() }}</div>
+          </div>
+        {% endif %}
+      </div>
+    {% endif %}
     <h6>AI Summary</h6>
     <div class="mb-3" style="white-space:pre-wrap;">{{ email.summary or "" }}</div>
 

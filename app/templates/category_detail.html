@@ -29,10 +29,15 @@
         </thead>
         <tbody>
           {% for e in emails %}
-          <tr>
+          <tr {% if e.unsubscribed_at %}class="table-secondary"{% endif %}>
             <td><input class="email-cb" type="checkbox" name="email_ids" value="{{ e.id }}"/></td>
             <td class="text-nowrap">{{ e.from_email or "" }}</td>
-            <td><a href="/emails/{{ e.id }}">{{ e.subject or "(no subject)" }}</a></td>
+            <td>
+              <a href="/emails/{{ e.id }}">{{ e.subject or "(no subject)" }}</a>
+              {% if e.unsubscribed_at %}
+                <span class="badge bg-success ms-1" title="Unsubscribed on {{ e.unsubscribed_at }}">Unsubscribed</span>
+              {% endif %}
+            </td>
             <td style="max-width:520px; white-space:pre-wrap;">{{ e.summary or "" }}</td>
             <td class="text-nowrap">{{ e.received_at or "" }}</td>
           </tr>
@@ -49,5 +54,52 @@
 function toggleAll(cb){
   document.querySelectorAll('.email-cb').forEach(x => x.checked = cb.checked);
 }
+
+{% if unsubscribe_results %}
+(function() {
+  function showToastNotifications() {
+    if (typeof toastr === 'undefined') {
+      console.error('toastr is not loaded');
+      return;
+    }
+    
+    const results = {{ unsubscribe_results | tojson }};
+    const successCount = results.filter(r => r.success).length;
+    const failCount = results.filter(r => !r.success).length;
+    
+    if (successCount > 0) {
+      const successEmails = results.filter(r => r.success);
+      let message = `Successfully unsubscribed from ${successCount} email(s):\n\n`;
+      successEmails.forEach((r, i) => {
+        message += `${i + 1}. ${r.email}\n   "${r.subject}"\n   ${r.message}\n\n`;
+      });
+      toastr.success(message.trim(), "Unsubscribe Successful", { timeOut: 15000 });
+    }
+    
+    if (failCount > 0) {
+      const failEmails = results.filter(r => !r.success);
+      let message = `Failed to unsubscribe from ${failCount} email(s):\n\n`;
+      failEmails.forEach((r, i) => {
+        message += `${i + 1}. ${r.email}\n   "${r.subject}"\n   ${r.message}\n\n`;
+      });
+      toastr.error(message.trim(), "Unsubscribe Failed", { timeOut: 15000 });
+    }
+  }
+  
+  function waitForToastr() {
+    if (typeof toastr !== 'undefined') {
+      showToastNotifications();
+    } else {
+      setTimeout(waitForToastr, 50);
+    }
+  }
+  
+  if (window.addEventListener) {
+    window.addEventListener('load', waitForToastr);
+  } else {
+    setTimeout(waitForToastr, 500);
+  }
+})();
+{% endif %}
 </script>
 {% endblock %}

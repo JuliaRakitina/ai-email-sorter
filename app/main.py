@@ -3,6 +3,7 @@ import json
 import logging
 from datetime import datetime
 from typing import Optional, List
+from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, Request, Depends, Form, HTTPException
@@ -453,9 +454,7 @@ def sync_now(request: Request, session: Session = Depends(get_session)):
     if uncategorized.id not in [c.id for c in categories]:
         categories.append(uncategorized)
 
-    process_email_messages(
-        gmail, ga, ids, categories, session, user, get_or_create_uncategorized
-    )
+    process_email_messages(gmail, ga, ids, categories, session, user, get_or_create_uncategorized)
 
     ga.last_sync_at = datetime.utcnow()
     session.add(ga)
@@ -492,12 +491,21 @@ def category_detail(
         .limit(200)
     ).all()
 
+    unsubscribe_results = None
+    unsubscribe_results_json = request.query_params.get("unsubscribe_results")
+    if unsubscribe_results_json:
+        try:
+            unsubscribe_results = json.loads(unsubscribe_results_json)
+        except Exception:
+            pass
+
     return render(
         request,
         "category_detail.html",
         user=user,
         category=category,
         emails=emails,
+        unsubscribe_results=unsubscribe_results,
         flash=None,
     )
 
@@ -524,6 +532,7 @@ def category_bulk(
     if not category or category.user_id != user.id:
         return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
 
+    unsubscribe_results = []
     for eid in email_ids:
         rec = session.get(EmailRecord, eid)
         if not rec or rec.category_id != category_id:
@@ -543,21 +552,61 @@ def category_bulk(
             session.commit()
 
         elif action == "unsubscribe":
-            full = (
-                gmail.users()
-                .messages()
-                .get(userId="me", id=rec.gmail_message_id, format="full")
-                .execute()
-            )
-            headers = extract_headers(full)
-            body_text, body_html = extract_bodies(full)
-            with httpx.Client() as client:
-                ok, msg = best_effort_unsubscribe(client, headers, body_html or "")
-            if ok:
-                rec.unsubscribed_at = datetime.utcnow()
-            rec.summary = (rec.summary or "") + f"\n\n[Unsubscribe] {msg}"
-            session.add(rec)
-            session.commit()
+            logger.info(f"Processing unsubscribe for email {rec.id} from {rec.from_email}")
+            print(f"\n[Unsubscribe] Processing unsubscribe for email ID {rec.id} from {rec.from_email}")
+            try:
+                full = (
+                    gmail.users()
+                    .messages()
+                    .get(userId="me", id=rec.gmail_message_id, format="full")
+                    .execute()
+                )
+                headers = extract_headers(full)
+                body_text, body_html = extract_bodies(full)
+                print(f"[Unsubscribe] Extracted headers, found {len(headers)} header(s)")
+                
+                with httpx.Client() as client:
+                    ok, msg = best_effort_unsubscribe(client, headers, body_html or "")
+                
+                if ok:
+                    rec.unsubscribed_at = datetime.utcnow()
+                    logger.info(f"Unsubscribe successful for email {rec.id}: {msg}")
+                    print(f"[Unsubscribe] ✓ Successfully unsubscribed! Timestamp set: {rec.unsubscribed_at}")
+                    unsubscribe_results.append({
+                        "email": rec.from_email or "Unknown",
+                        "subject": rec.subject or "(no subject)",
+                        "success": True,
+                        "message": msg
+                    })
+                else:
+                    logger.warning(f"Unsubscribe failed for email {rec.id}: {msg}")
+                    print(f"[Unsubscribe] ✗ Unsubscribe failed: {msg}")
+                    unsubscribe_results.append({
+                        "email": rec.from_email or "Unknown",
+                        "subject": rec.subject or "(no subject)",
+                        "success": False,
+                        "message": msg
+                    })
+                
+                session.add(rec)
+                session.commit()
+            except Exception as e:
+                error_msg = f"Error during unsubscribe: {str(e)}"
+                logger.error(f"Unsubscribe error for email {rec.id}: {e}", exc_info=True)
+                print(f"[Unsubscribe] ✗ ERROR: {error_msg}")
+                unsubscribe_results.append({
+                    "email": rec.from_email or "Unknown",
+                    "subject": rec.subject or "(no subject)",
+                    "success": False,
+                    "message": error_msg
+                })
+                session.add(rec)
+                session.commit()
+
+    if action == "unsubscribe" and unsubscribe_results:
+        results_json = json.dumps(unsubscribe_results)
+        redirect_url = f"/categories/{category_id}?unsubscribe_results={quote(results_json)}"
+        return RedirectResponse(redirect_url, status_code=HTTP_303_SEE_OTHER)
 
     return RedirectResponse(
         f"/categories/{category_id}", status_code=HTTP_303_SEE_OTHER
