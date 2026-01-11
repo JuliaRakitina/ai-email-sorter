@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h2 class="mb-0">Dashboard</h2>
+  <div class="d-flex gap-2">
+    <form method="post" action="/sync">
+      <button class="btn btn-outline-primary">Sync New Emails</button>
+    </form>
+    <a class="btn btn-success" href="/categories/new">+ Add Category</a>
+  </div>
+</div>
+
+<div class="row g-3">
+  <div class="col-md-4">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h5>Connected Gmail Accounts</h5>
+        <ul class="list-group mb-3">
+          {% for ga in gmail_accounts %}
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+              <span>{{ ga.email }}</span>
+              <small class="text-muted">{% if ga.last_sync_at %}last sync: {{ ga.last_sync_at }}{% else %}never synced{% endif %}</small>
+            </li>
+          {% else %}
+            <li class="list-group-item text-muted">No accounts connected</li>
+          {% endfor %}
+        </ul>
+        <a class="btn btn-outline-secondary btn-sm" href="/auth/google?connect=1">Connect another Gmail</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-8">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h5>Categories</h5>
+        <div class="list-group">
+          {% for c in categories %}
+            <a class="list-group-item list-group-item-action d-flex justify-content-between align-items-center" href="/categories/{{ c.id }}">
+              <div>
+                <div class="fw-semibold">{{ c.name }}</div>
+                <small class="text-muted">{{ c.description }}</small>
+              </div>
+              <span class="badge text-bg-secondary">{{ counts.get(c.id, 0) }}</span>
+            </a>
+          {% else %}
+            <div class="text-muted">No categories yet. Add one to start sorting.</div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

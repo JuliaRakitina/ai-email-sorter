@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card shadow-sm">
+  <div class="card-body">
+    <h3 class="card-title">New Category</h3>
+    <form method="post" action="/categories/new">
+      <div class="mb-3">
+        <label class="form-label">Name</label>
+        <input name="name" class="form-control" required maxlength="80"/>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Description (used by AI)</label>
+        <textarea name="description" class="form-control" rows="4" required></textarea>
+      </div>
+      <button class="btn btn-success">Create</button>
+      <a class="btn btn-link" href="/">Cancel</a>
+    </form>
+  </div>
+</div>
+{% endblock %}

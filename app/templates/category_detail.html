@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h2 class="mb-0">{{ category.name }}</h2>
+    <div class="text-muted">{{ category.description }}</div>
+  </div>
+  <a class="btn btn-link" href="/">← Back</a>
+</div>
+
+<form method="post" action="/categories/{{ category.id }}/bulk" class="card shadow-sm">
+  <div class="card-body">
+    <div class="d-flex gap-2 mb-3">
+      <button name="action" value="delete" class="btn btn-danger btn-sm">Delete (Trash)</button>
+      <button name="action" value="unsubscribe" class="btn btn-outline-warning btn-sm">Unsubscribe</button>
+      <span class="text-muted ms-auto">{{ emails|length }} emails</span>
+    </div>
+
+    <div class="table-responsive">
+      <table class="table align-middle">
+        <thead>
+          <tr>
+            <th style="width:40px;"><input type="checkbox" onclick="toggleAll(this)"/></th>
+            <th>From</th>
+            <th>Subject</th>
+            <th>AI Summary</th>
+            <th>Received</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in emails %}
+          <tr>
+            <td><input class="email-cb" type="checkbox" name="email_ids" value="{{ e.id }}"/></td>
+            <td class="text-nowrap">{{ e.from_email or "" }}</td>
+            <td><a href="/emails/{{ e.id }}">{{ e.subject or "(no subject)" }}</a></td>
+            <td style="max-width:520px; white-space:pre-wrap;">{{ e.summary or "" }}</td>
+            <td class="text-nowrap">{{ e.received_at or "" }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="text-muted">No emails yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</form>
+
+<script>
+function toggleAll(cb){
+  document.querySelectorAll('.email-cb').forEach(x => x.checked = cb.checked);
+}
+</script>
+{% endblock %}

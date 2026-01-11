@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<a class="btn btn-link mb-2" href="/categories/{{ category_id }}">← Back to category</a>
+<div class="card shadow-sm">
+  <div class="card-body">
+    <h3 class="card-title mb-1">{{ email.subject or "(no subject)" }}</h3>
+    <div class="text-muted mb-3">From: {{ email.from_email or "" }} • Received: {{ email.received_at or "" }}</div>
+    <h6>AI Summary</h6>
+    <div class="mb-3" style="white-space:pre-wrap;">{{ email.summary or "" }}</div>
+
+    <hr/>
+    <h6>Original Contents</h6>
+    {% if email.body_html %}
+      <iframe style="width:100%; height:520px; border:1px solid #ddd; border-radius:8px;"
+              srcdoc="{{ email.body_html | e }}"></iframe>
+    {% else %}
+      <pre style="white-space:pre-wrap;">{{ email.body_text or "" }}</pre>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
