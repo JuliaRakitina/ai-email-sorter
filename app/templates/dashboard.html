@@ -18,14 +18,31 @@
         <ul class="list-group mb-3">
           {% for ga in gmail_accounts %}
             <li class="list-group-item d-flex justify-content-between align-items-center">
-              <span>{{ ga.email }}</span>
-              <small class="text-muted">{% if ga.last_sync_at %}last sync: {{ ga.last_sync_at }}{% else %}never synced{% endif %}</small>
+              <div class="flex-grow-1">
+                <div class="fw-semibold">
+                  {{ ga.email }}
+                  {% if active_gmail_id == ga.id %}
+                    <span class="badge bg-success ms-2">Active</span>
+                  {% endif %}
+                </div>
+                <small class="text-muted">{% if ga.last_sync_at %}last sync: {{ ga.last_sync_at }}{% else %}never synced{% endif %}</small>
+              </div>
+              <div class="d-flex gap-1">
+                {% if active_gmail_id != ga.id %}
+                  <form method="post" action="/accounts/{{ ga.id }}/select">
+                    <button type="submit" class="btn btn-outline-primary btn-sm">Select</button>
+                  </form>
+                {% endif %}
+                <form method="post" action="/accounts/{{ ga.id }}/disconnect" onsubmit="return confirm('Disconnect this Gmail account? All email records for this account will be deleted.');">
+                  <button type="submit" class="btn btn-outline-danger btn-sm">Disconnect</button>
+                </form>
+              </div>
             </li>
           {% else %}
             <li class="list-group-item text-muted">No accounts connected</li>
           {% endfor %}
         </ul>
-        <a class="btn btn-outline-secondary btn-sm" href="/auth/google?connect=1">Connect another Gmail</a>
+        <a class="btn btn-outline-secondary btn-sm" href="/auth/google?mode=connect">Connect another Gmail</a>
       </div>
     </div>
   </div>

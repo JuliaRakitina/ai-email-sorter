@@ -8,7 +8,7 @@ class Settings(BaseSettings):
 
     # App
     APP_NAME: str = "Jump AI Email Sorter"
-    BASE_URL: str = "https://aud-blessed-bedrooms-dietary.trycloudflare.com"
+    BASE_URL: str = "https://outside-expensive-gentleman-finances.trycloudflare.com"
     SECRET_KEY: str = (
         "change-me"  # used for signing cookies + encrypting tokens (see crypto.py)
     )

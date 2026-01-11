@@ -15,7 +15,12 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from .settings import settings
 from .db import init_db, get_session
 from .models import User, GmailAccount, Category, EmailRecord
-from .auth import get_current_user, SESSION_KEY
+from .auth import (
+    get_current_user,
+    SESSION_KEY,
+    get_active_gmail_account,
+    ACTIVE_GMAIL_KEY,
+)
 from .google_client import oauth_login, oauth_callback, build_gmail_service_from_enc
 from google.auth.exceptions import RefreshError
 from .crypto import encrypt_str
@@ -83,9 +88,23 @@ def home(request: Request, session: Session = Depends(get_session)):
     gmail_accounts = session.exec(
         select(GmailAccount).where(GmailAccount.user_id == user.id)
     ).all()
+
+    active_gmail = get_active_gmail_account(request, session, user)
+    if not active_gmail:
+        return render(
+            request,
+            "dashboard.html",
+            user=user,
+            gmail_accounts=gmail_accounts,
+            active_gmail_id=None,
+            categories=[],
+            counts={},
+            flash=None,
+        )
+
     categories = session.exec(
         select(Category)
-        .where(Category.user_id == user.id)
+        .where(Category.gmail_account_id == active_gmail.id)
         .order_by(Category.created_at.desc())
     ).all()
 
@@ -104,6 +123,7 @@ def home(request: Request, session: Session = Depends(get_session)):
         "dashboard.html",
         user=user,
         gmail_accounts=gmail_accounts,
+        active_gmail_id=active_gmail.id,
         categories=categories,
         counts=counts,
         flash=None,
@@ -112,7 +132,9 @@ def home(request: Request, session: Session = Depends(get_session)):
 
 @app.get("/auth/google")
 async def auth_google(request: Request):
-    return await oauth_login(request)
+    mode = request.query_params.get("mode", "login")
+    request.session["oauth_mode"] = mode
+    return await oauth_login(request, prompt="consent")
 
 
 @app.get(settings.GOOGLE_REDIRECT_PATH)
@@ -140,9 +162,44 @@ async def auth_google_callback(
     if not email:
         return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
 
-    # Check if refresh_token is present in the token
-    refresh_token = token.get("refresh_token")
+    oauth_mode = request.session.pop("oauth_mode", "login")
 
+    if oauth_mode == "connect":
+        user = get_current_user(request, session)
+        if not user:
+            return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
+
+        existing_ga = session.exec(
+            select(GmailAccount).where(
+                GmailAccount.user_id == user.id, GmailAccount.email == email
+            )
+        ).first()
+
+        if existing_ga:
+            existing_ga.token_json_enc = encrypt_str(json.dumps(token))
+            session.add(existing_ga)
+            session.commit()
+            session.refresh(existing_ga)
+            ga = existing_ga
+        else:
+            token_enc = encrypt_str(json.dumps(token))
+            ga = GmailAccount(user_id=user.id, email=email, token_json_enc=token_enc)
+            session.add(ga)
+            session.commit()
+            session.refresh(ga)
+
+        try:
+            gmail, updated_token_enc = build_gmail_service_from_enc(ga.token_json_enc)
+            ga.token_json_enc = updated_token_enc
+            session.add(ga)
+            session.commit()
+            setup_gmail_watch(gmail, ga, session)
+        except Exception as e:
+            logger.warning(f"Failed to setup Gmail watch during OAuth callback: {e}")
+
+        return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
+
+    refresh_token = token.get("refresh_token")
     if refresh_token:
         logger.info(f"✓ Refresh token received for {email}")
         print(f"✓ Successfully authenticated {email} with refresh token")
@@ -155,7 +212,6 @@ async def auth_google_callback(
         )
         print(f"Token contains keys: {list(token.keys())}")
 
-        # If refresh_token_expires_in exists but refresh_token doesn't, user needs to revoke
         if "refresh_token_expires_in" in token:
             print(
                 "\nNOTE: Google returned refresh_token_expires_in but no refresh_token.\n"
@@ -181,7 +237,6 @@ async def auth_google_callback(
         session.commit()
         session.refresh(user)
 
-    # Check if GmailAccount already exists for this user/email
     existing_ga = session.exec(
         select(GmailAccount).where(
             GmailAccount.user_id == user.id, GmailAccount.email == email
@@ -220,6 +275,62 @@ def logout(request: Request):
     return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
 
 
+@app.post("/accounts/{account_id}/select")
+def select_account(
+    account_id: int, request: Request, session: Session = Depends(get_session)
+):
+    user = get_current_user(request, session)
+    if not user:
+        return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
+
+    gmail_account = session.get(GmailAccount, account_id)
+    if not gmail_account or gmail_account.user_id != user.id:
+        return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
+
+    request.session[ACTIVE_GMAIL_KEY] = account_id
+    return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
+
+
+@app.post("/accounts/{account_id}/disconnect")
+def disconnect_account(
+    account_id: int, request: Request, session: Session = Depends(get_session)
+):
+    user = get_current_user(request, session)
+    if not user:
+        return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
+
+    gmail_account = session.get(GmailAccount, account_id)
+    if not gmail_account or gmail_account.user_id != user.id:
+        return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
+
+    if request.session.get(ACTIVE_GMAIL_KEY) == account_id:
+        del request.session[ACTIVE_GMAIL_KEY]
+
+    categories = session.exec(
+        select(Category).where(Category.gmail_account_id == account_id)
+    ).all()
+    for category in categories:
+        session.delete(category)
+
+    email_records = session.exec(
+        select(EmailRecord).where(EmailRecord.gmail_account_id == account_id)
+    ).all()
+    email_count = len(email_records)
+
+    for email_record in email_records:
+        session.delete(email_record)
+
+    session.delete(gmail_account)
+    session.commit()
+
+    logger.info(
+        f"Disconnected Gmail account {gmail_account.email} for user {user.email}. "
+        f"Deleted {email_count} email records."
+    )
+
+    return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
+
+
 @app.get("/categories/new", response_class=HTMLResponse)
 def category_new(request: Request, session: Session = Depends(get_session)):
     user = get_current_user(request, session)
@@ -238,7 +349,17 @@ def category_create(
     user = get_current_user(request, session)
     if not user:
         return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
-    c = Category(user_id=user.id, name=name.strip(), description=description.strip())
+
+    active_gmail = get_active_gmail_account(request, session, user)
+    if not active_gmail:
+        return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
+
+    c = Category(
+        user_id=user.id,
+        gmail_account_id=active_gmail.id,
+        name=name.strip(),
+        description=description.strip(),
+    )
     session.add(c)
     session.commit()
     return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
@@ -250,63 +371,64 @@ def sync_now(request: Request, session: Session = Depends(get_session)):
     if not user:
         return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
 
-    gmail_accounts = session.exec(
-        select(GmailAccount).where(GmailAccount.user_id == user.id)
+    active_gmail = get_active_gmail_account(request, session, user)
+    if not active_gmail:
+        return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
+
+    categories = session.exec(
+        select(Category).where(Category.gmail_account_id == active_gmail.id)
     ).all()
-    categories = session.exec(select(Category).where(Category.user_id == user.id)).all()
 
-    for ga in gmail_accounts:
-        try:
-            gmail, updated_token_enc = build_gmail_service_from_enc(ga.token_json_enc)
-            ga.token_json_enc = updated_token_enc
-        except ValueError as e:
-            logger.error(f"Gmail account {ga.email} token error: {e}")
-            print(f"Error with Gmail account {ga.email}: {e}. Please re-authenticate.")
-            continue
+    ga = active_gmail
+    try:
+        gmail, updated_token_enc = build_gmail_service_from_enc(ga.token_json_enc)
+        ga.token_json_enc = updated_token_enc
+    except ValueError as e:
+        logger.error(f"Gmail account {ga.email} token error: {e}")
+        print(f"Error with Gmail account {ga.email}: {e}. Please re-authenticate.")
+        return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
 
-        try:
-            ids = list_message_ids(gmail, "me", settings.SYNC_QUERY, max_results=25)
-        except RefreshError as e:
-            logger.error(f"Gmail API refresh error for {ga.email}: {e}")
+    try:
+        ids = list_message_ids(gmail, "me", settings.SYNC_QUERY, max_results=25)
+    except RefreshError as e:
+        logger.error(f"Gmail API refresh error for {ga.email}: {e}")
+        print(
+            f"Authentication error for {ga.email}: {e}. Please sign in with Google again."
+        )
+        return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
+    except TypeError as e:
+        if "datetime" in str(e).lower() or "offset" in str(e).lower():
+            logger.error(f"Gmail API datetime error for {ga.email}: {e}")
             print(
-                f"Authentication error for {ga.email}: {e}. Please sign in with Google again."
+                f"Token expiry error for {ga.email}. "
+                "Please sign out and sign in again to refresh your token."
             )
-            continue
-        except TypeError as e:
-            if "datetime" in str(e).lower() or "offset" in str(e).lower():
-                logger.error(f"Gmail API datetime error for {ga.email}: {e}")
-                print(
-                    f"Token expiry error for {ga.email}. "
-                    "Please sign out and sign in again to refresh your token."
-                )
-            else:
-                logger.error(f"Gmail API TypeError for {ga.email}: {e}")
-                print(f"Error syncing emails for {ga.email}: {e}")
-            continue
-        except Exception as e:
-            error_msg = str(e)
-            if (
-                "Bearer" in error_msg
-                or "header" in error_msg.lower()
-                or "illegal header" in error_msg.lower()
-            ):
-                logger.error(
-                    f"Gmail API authentication header error for {ga.email}: {e}"
-                )
-                print(
-                    f"Authentication error for {ga.email}: Invalid token. "
-                    "Please sign out and sign in again."
-                )
-            else:
-                logger.error(f"Gmail API error for {ga.email}: {e}")
-                print(f"Error syncing emails for {ga.email}: {e}")
-            continue
+        else:
+            logger.error(f"Gmail API TypeError for {ga.email}: {e}")
+            print(f"Error syncing emails for {ga.email}: {e}")
+        return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
+    except Exception as e:
+        error_msg = str(e)
+        if (
+            "Bearer" in error_msg
+            or "header" in error_msg.lower()
+            or "illegal header" in error_msg.lower()
+        ):
+            logger.error(f"Gmail API authentication header error for {ga.email}: {e}")
+            print(
+                f"Authentication error for {ga.email}: Invalid token. "
+                "Please sign out and sign in again."
+            )
+        else:
+            logger.error(f"Gmail API error for {ga.email}: {e}")
+            print(f"Error syncing emails for {ga.email}: {e}")
+        return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
 
-        process_email_messages(gmail, ga, ids, categories, session)
+    process_email_messages(gmail, ga, ids, categories, session)
 
-        ga.last_sync_at = datetime.utcnow()
-        session.add(ga)
-        session.commit()
+    ga.last_sync_at = datetime.utcnow()
+    session.add(ga)
+    session.commit()
 
     return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
 
@@ -319,8 +441,16 @@ def category_detail(
     if not user:
         return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
 
+    active_gmail = get_active_gmail_account(request, session, user)
+    if not active_gmail:
+        return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
+
     category = session.get(Category, category_id)
-    if not category or category.user_id != user.id:
+    if (
+        not category
+        or category.user_id != user.id
+        or category.gmail_account_id != active_gmail.id
+    ):
         return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
 
     emails = session.exec(
@@ -481,7 +611,7 @@ async def pubsub_webhook(request: Request, session: Session = Depends(get_sessio
             return Response(status_code=200)
 
         categories = session.exec(
-            select(Category).where(Category.user_id == user.id)
+            select(Category).where(Category.gmail_account_id == gmail_account.id)
         ).all()
 
         try:

@@ -32,11 +32,11 @@ def redirect_uri() -> str:
     return settings.BASE_URL.rstrip("/") + settings.GOOGLE_REDIRECT_PATH
 
 
-async def oauth_login(request: Request):
+async def oauth_login(request: Request, prompt: str = "consent"):
     return await oauth.google.authorize_redirect(
         request,
         redirect_uri(),
-        prompt="consent",
+        prompt=prompt,
         access_type="offline",
         include_granted_scopes="true",
     )

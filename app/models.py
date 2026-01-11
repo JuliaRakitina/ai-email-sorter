@@ -24,6 +24,7 @@ class GmailAccount(SQLModel, table=True):
 class Category(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id", index=True)
+    gmail_account_id: int = Field(foreign_key="gmailaccount.id", index=True)
     name: str = Field(index=True)
     description: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
