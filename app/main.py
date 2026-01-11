@@ -1,13 +1,12 @@
 from __future__ import annotations
 import json
 import logging
-import time
 from datetime import datetime
 from typing import Optional, List
 
 import httpx
-from fastapi import FastAPI, Request, Depends, Form
-from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi import FastAPI, Request, Depends, Form, HTTPException
+from fastapi.responses import RedirectResponse, HTMLResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.status import HTTP_303_SEE_OTHER
 from sqlmodel import Session, select, func
@@ -23,13 +22,14 @@ from .crypto import encrypt_str
 from .gmail_service import (
     extract_headers,
     extract_bodies,
-    parse_internal_date_ms,
     list_message_ids,
-    archive_message,
     trash_message,
 )
-from .ai import choose_category, summarize_email
 from .unsubscribe_agent import best_effort_unsubscribe
+from .gmail_watch import setup_gmail_watch
+from .history_sync import sync_history
+from .email_processor import process_email_messages
+from .pubsub_webhook import verify_pubsub_jwt, parse_pubsub_message
 
 logger = logging.getLogger(__name__)
 
@@ -189,16 +189,26 @@ async def auth_google_callback(
     ).first()
 
     if existing_ga:
-        # Update existing account with new token
         existing_ga.token_json_enc = encrypt_str(json.dumps(token))
         session.add(existing_ga)
         session.commit()
+        session.refresh(existing_ga)
+        ga = existing_ga
     else:
-        # Create new account
         token_enc = encrypt_str(json.dumps(token))
         ga = GmailAccount(user_id=user.id, email=email, token_json_enc=token_enc)
         session.add(ga)
         session.commit()
+        session.refresh(ga)
+
+    try:
+        gmail, updated_token_enc = build_gmail_service_from_enc(ga.token_json_enc)
+        ga.token_json_enc = updated_token_enc
+        session.add(ga)
+        session.commit()
+        setup_gmail_watch(gmail, ga, session)
+    except Exception as e:
+        logger.warning(f"Failed to setup Gmail watch during OAuth callback: {e}")
 
     request.session[SESSION_KEY] = email
     return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
@@ -245,28 +255,24 @@ def sync_now(request: Request, session: Session = Depends(get_session)):
     ).all()
     categories = session.exec(select(Category).where(Category.user_id == user.id)).all()
 
-    # Very simple sync: for each account, search inbox with SYNC_QUERY, import up to 50.
     for ga in gmail_accounts:
         try:
             gmail, updated_token_enc = build_gmail_service_from_enc(ga.token_json_enc)
             ga.token_json_enc = updated_token_enc
         except ValueError as e:
-            # Missing required token fields - user needs to re-authenticate
             logger.error(f"Gmail account {ga.email} token error: {e}")
             print(f"Error with Gmail account {ga.email}: {e}. Please re-authenticate.")
             continue
 
         try:
-            ids = list_message_ids(gmail, "me", settings.SYNC_QUERY, max_results=50)
+            ids = list_message_ids(gmail, "me", settings.SYNC_QUERY, max_results=25)
         except RefreshError as e:
-            # Specific handling for refresh token errors
             logger.error(f"Gmail API refresh error for {ga.email}: {e}")
             print(
                 f"Authentication error for {ga.email}: {e}. Please sign in with Google again."
             )
             continue
         except TypeError as e:
-            # Handle datetime comparison errors
             if "datetime" in str(e).lower() or "offset" in str(e).lower():
                 logger.error(f"Gmail API datetime error for {ga.email}: {e}")
                 print(
@@ -278,7 +284,6 @@ def sync_now(request: Request, session: Session = Depends(get_session)):
                 print(f"Error syncing emails for {ga.email}: {e}")
             continue
         except Exception as e:
-            # Catch other Gmail API errors
             error_msg = str(e)
             if (
                 "Bearer" in error_msg
@@ -296,143 +301,8 @@ def sync_now(request: Request, session: Session = Depends(get_session)):
                 logger.error(f"Gmail API error for {ga.email}: {e}")
                 print(f"Error syncing emails for {ga.email}: {e}")
             continue
-        # Process emails in batches to reduce database lock contention
-        batch_size = 5
-        email_records = []
-        batch = []
 
-        for idx, mid in enumerate(ids, 1):
-            try:
-                # Use no_autoflush to prevent autoflush during query
-                # This avoids database lock issues when checking for existing records
-                with session.no_autoflush:
-                    existing = session.exec(
-                        select(EmailRecord).where(
-                            EmailRecord.gmail_account_id == ga.id,
-                            EmailRecord.gmail_message_id == mid,
-                        )
-                    ).first()
-                if existing:
-                    continue
-
-                full = (
-                    gmail.users()
-                    .messages()
-                    .get(userId="me", id=mid, format="full")
-                    .execute()
-                )
-                headers = extract_headers(full)
-                subject = headers.get("subject", "")
-                from_email = headers.get("from", "")
-                snippet = full.get("snippet", "")
-                body_text, body_html = extract_bodies(full)
-                received_at = parse_internal_date_ms(full)
-
-                chosen = choose_category(categories, subject, snippet, body_text or "")
-                category_id = None
-                if chosen:
-                    match = next((c for c in categories if c.name == chosen), None)
-                    category_id = match.id if match else None
-
-                summary = summarize_email(
-                    subject, from_email, body_text or snippet or ""
-                )
-
-                rec = EmailRecord(
-                    gmail_account_id=ga.id,
-                    category_id=category_id,
-                    gmail_message_id=mid,
-                    thread_id=full.get("threadId"),
-                    from_email=from_email,
-                    subject=subject,
-                    snippet=snippet,
-                    body_text=body_text,
-                    body_html=body_html,
-                    summary=summary,
-                    received_at=received_at,
-                    archived_at=datetime.utcnow(),
-                )
-                session.add(rec)
-                batch.append((gmail, mid))  # Store for archiving later
-
-                # Commit in batches to reduce lock contention
-                if len(batch) >= batch_size:
-                    try:
-                        session.commit()
-                        email_records.extend(batch)
-                        batch = []  # Clear batch after successful commit
-                    except Exception as db_error:
-                        session.rollback()
-                        error_msg = str(db_error)
-                        if (
-                            "locked" in error_msg.lower()
-                            or "database is locked" in error_msg.lower()
-                            or "autoflush" in error_msg.lower()
-                        ):
-                            logger.warning(
-                                "Database locked during batch commit. Retrying after delay..."
-                            )
-                            # Wait a bit and retry once
-                            time.sleep(1.0)  # Longer wait for lock
-                            try:
-                                session.commit()
-                                email_records.extend(batch)
-                                batch = []
-                            except Exception as retry_error:
-                                logger.error(
-                                    f"Database still locked after retry: {retry_error}. Skipping batch."
-                                )
-                                # Clear batch to avoid re-adding
-                                batch = []
-                                # Continue processing - don't fail entire sync
-                        else:
-                            logger.error(
-                                f"Database error during batch commit: {db_error}"
-                            )
-                            # Clear batch to avoid re-adding
-                            batch = []
-                            # Continue processing - don't fail entire sync
-
-            except Exception as e:
-                error_msg = str(e)
-                logger.error(f"Error processing email {mid}: {e}")
-                # Rollback and continue with next email
-                try:
-                    session.rollback()
-                except Exception:
-                    pass  # Ignore rollback errors
-                continue
-
-        # Commit any remaining records in the batch
-        if batch:
-            try:
-                session.commit()
-                email_records.extend(batch)
-            except Exception as db_error:
-                session.rollback()
-                error_msg = str(db_error)
-                if (
-                    "locked" in error_msg.lower()
-                    or "database is locked" in error_msg.lower()
-                    or "autoflush" in error_msg.lower()
-                ):
-                    logger.warning("Database locked during final commit. Retrying...")
-                    time.sleep(1.0)
-                    try:
-                        session.commit()
-                        email_records.extend(batch)
-                    except Exception:
-                        logger.error("Failed to commit remaining batch after retry")
-                else:
-                    logger.error("Database error during final commit: %s", db_error)
-
-        # Archive emails in Gmail after successful database commits
-        for gmail_service, message_id in email_records:
-            try:
-                archive_message(gmail_service, "me", message_id)
-            except Exception as archive_error:
-                logger.warning(f"Failed to archive email {message_id}: {archive_error}")
-                # Don't fail the whole sync if archiving fails
+        process_email_messages(gmail, ga, ids, categories, session)
 
         ga.last_sync_at = datetime.utcnow()
         session.add(ga)
@@ -559,3 +429,78 @@ def email_detail(
         category_id=rec.category_id or 0,
         flash=None,
     )
+
+
+@app.post("/webhooks/pubsub")
+async def pubsub_webhook(request: Request, session: Session = Depends(get_session)):
+    if not verify_pubsub_jwt(request):
+        raise HTTPException(status_code=401, detail="Invalid JWT token")
+
+    try:
+        body = await request.json()
+        data = parse_pubsub_message(body)
+        if not data:
+            logger.warning("Failed to parse Pub/Sub message data")
+            return Response(status_code=200)
+
+        email_address = data.get("emailAddress")
+        history_id = data.get("historyId")
+
+        if not email_address:
+            logger.warning("Missing emailAddress in Pub/Sub message")
+            return Response(status_code=200)
+
+        gmail_account = session.exec(
+            select(GmailAccount).where(GmailAccount.email == email_address)
+        ).first()
+
+        if not gmail_account:
+            logger.warning(f"No GmailAccount found for {email_address}")
+            return Response(status_code=200)
+
+        if not gmail_account.last_history_id:
+            logger.warning(
+                f"No last_history_id for {gmail_account.email}, skipping history sync"
+            )
+            return Response(status_code=200)
+
+        try:
+            gmail, updated_token_enc = build_gmail_service_from_enc(
+                gmail_account.token_json_enc
+            )
+            gmail_account.token_json_enc = updated_token_enc
+            session.add(gmail_account)
+            session.commit()
+        except Exception as e:
+            logger.error(f"Failed to build Gmail service for {email_address}: {e}")
+            return Response(status_code=200)
+
+        user = session.get(User, gmail_account.user_id)
+        if not user:
+            logger.warning(f"No User found for GmailAccount {gmail_account.id}")
+            return Response(status_code=200)
+
+        categories = session.exec(
+            select(Category).where(Category.user_id == user.id)
+        ).all()
+
+        try:
+            sync_history(
+                gmail,
+                gmail_account,
+                gmail_account.last_history_id,
+                categories,
+                session,
+            )
+            if history_id:
+                gmail_account.last_history_id = history_id
+                session.add(gmail_account)
+                session.commit()
+        except Exception as e:
+            logger.error(f"History sync error for {email_address}: {e}")
+
+        return Response(status_code=200)
+
+    except Exception as e:
+        logger.error(f"Webhook processing error: {e}")
+        return Response(status_code=200)

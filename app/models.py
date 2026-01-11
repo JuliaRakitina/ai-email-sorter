@@ -14,9 +14,11 @@ class GmailAccount(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id", index=True)
     email: str = Field(index=True)
-    # Encrypted JSON tokens (access+refresh+expiry)
     token_json_enc: str
     last_sync_at: Optional[datetime] = None
+    last_history_id: Optional[str] = None
+    watch_expiration: Optional[datetime] = None
+    watch_active: bool = Field(default=False)
 
 
 class Category(SQLModel, table=True):
