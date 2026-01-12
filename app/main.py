@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -7,7 +8,13 @@ from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, Request, Depends, Form, HTTPException, BackgroundTasks
-from fastapi.responses import RedirectResponse, HTMLResponse, Response, JSONResponse
+from fastapi.responses import (
+    RedirectResponse,
+    HTMLResponse,
+    Response,
+    JSONResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.status import HTTP_303_SEE_OTHER
@@ -41,6 +48,7 @@ from .gmail_watch import setup_gmail_watch
 from .history_sync import sync_history
 from .email_processor import process_email_messages
 from .pubsub_webhook import verify_pubsub_jwt, parse_pubsub_message
+from .sse_broadcaster import broadcaster
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +120,49 @@ def _startup():
             "This will cause OAuth failures. Set a proper SECRET_KEY in .env"
         )
     init_db()
+
+
+@app.get("/events")
+async def events_endpoint(request: Request):
+    """Server-Sent Events endpoint for real-time notifications.
+
+    No authentication required - SSE is public for simplicity.
+    Clients can filter events by gmail_account_id if needed.
+    """
+    import uuid
+
+    client_id = str(uuid.uuid4())
+    queue = broadcaster.subscribe(client_id)
+
+    async def event_generator():
+        try:
+            # Send initial connection message
+            yield f"data: {json.dumps({'type': 'connected'})}\n\n"
+
+            while True:
+                try:
+                    # Wait for message with timeout
+                    message = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield f"data: {message}\n\n"
+                except asyncio.TimeoutError:
+                    # Send keepalive
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"SSE event generator error: {e}")
+        finally:
+            broadcaster.unsubscribe(client_id)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -431,7 +482,7 @@ def sync_now(request: Request, session: Session = Depends(get_session)):
         return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
 
     try:
-        ids = list_message_ids(gmail, "me", settings.SYNC_QUERY, max_results=25)
+        ids = list_message_ids(gmail, "me", settings.SYNC_QUERY, max_results=10)
     except RefreshError as e:
         logger.error(f"Gmail API refresh error for {ga.email}: {e}")
         print(
@@ -810,7 +861,7 @@ async def pubsub_webhook(request: Request, session: Session = Depends(get_sessio
             categories.append(uncategorized)
 
         try:
-            sync_history(
+            result = sync_history(
                 gmail,
                 gmail_account,
                 gmail_account.last_history_id,
@@ -819,10 +870,30 @@ async def pubsub_webhook(request: Request, session: Session = Depends(get_sessio
                 user,
                 get_or_create_uncategorized,
             )
-            if history_id:
-                gmail_account.last_history_id = history_id
+            if result:
+                new_history_id, processed_count = result
+                if history_id:
+                    gmail_account.last_history_id = history_id
+                elif new_history_id:
+                    gmail_account.last_history_id = new_history_id
                 session.add(gmail_account)
                 session.commit()
+
+            # Broadcast event if emails were processed
+            if processed_count > 0:
+                try:
+                    # Schedule broadcast in background (webhook is async)
+                    asyncio.create_task(
+                        broadcaster.broadcast(
+                            "email_processed",
+                            {
+                                "gmail_account_id": gmail_account.id,
+                                "added_count": processed_count,
+                            },
+                        )
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to broadcast event: {e}")
         except Exception as e:
             logger.error(f"History sync error for {email_address}: {e}")
 

@@ -21,7 +21,7 @@ def sync_history(
     session: Session,
     user: User,
     get_uncategorized_func,
-) -> Optional[str]:
+) -> tuple[Optional[str], int]:
     try:
         history_response = (
             gmail_service.users()
@@ -48,8 +48,9 @@ def sync_history(
 
             new_history_id = history_record.get("historyId", new_history_id)
 
+        processed_count = 0
         if message_ids:
-            processed = process_email_messages(
+            processed_count = process_email_messages(
                 gmail_service,
                 gmail_account,
                 message_ids,
@@ -59,14 +60,14 @@ def sync_history(
                 get_uncategorized_func,
             )
             logger.info(
-                f"History sync processed {processed} emails for {gmail_account.email}"
+                f"History sync processed {processed_count} emails for {gmail_account.email}"
             )
 
         gmail_account.last_history_id = new_history_id
         session.add(gmail_account)
         session.commit()
 
-        return new_history_id
+        return new_history_id, processed_count
 
     except HttpError as e:
         error_content = e.content.decode("utf-8") if e.content else ""
@@ -88,7 +89,7 @@ def sync_history(
         raise
     except Exception as e:
         logger.error(f"History sync error for {gmail_account.email}: {e}")
-        raise
+        return None, 0
 
 
 def fallback_query_sync(
@@ -98,13 +99,14 @@ def fallback_query_sync(
     session: Session,
     user: User,
     get_uncategorized_func,
-) -> Optional[str]:
+) -> tuple[Optional[str], int]:
     try:
         ids = list_message_ids(
-            gmail_service, "me", "in:inbox newer_than:1d", max_results=25
+            gmail_service, "me", "in:inbox newer_than:1d", max_results=10
         )
+        processed_count = 0
         if ids:
-            process_email_messages(
+            processed_count = process_email_messages(
                 gmail_service,
                 gmail_account,
                 ids,
@@ -123,9 +125,9 @@ def fallback_query_sync(
 
         logger.info(
             f"Fallback query sync completed for {gmail_account.email}, "
-            f"new historyId={new_history_id}"
+            f"new historyId={new_history_id}, processed {processed_count} emails"
         )
-        return new_history_id
+        return new_history_id, processed_count
     except Exception as e:
         logger.error(f"Fallback query sync error for {gmail_account.email}: {e}")
-        return None
+        return None, 0

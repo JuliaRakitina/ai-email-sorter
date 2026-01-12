@@ -8,7 +8,7 @@
     <a href="/" class="btn btn-link">← Back to Dashboard</a>
 </div>
 
-<form method="post" action="/categories/{{ category.id }}/bulk" class="card shadow-sm">
+<form method="post" action="/categories/{{ category.id }}/bulk" class="card shadow-sm js-heavy-action">
     <div class="card-body">
         <div class="action-buttons" style="margin-bottom: 1.5rem;">
             <button name="action" value="delete" class="btn btn-danger btn-sm" onclick="return confirm('Delete selected emails?')">Delete (Trash)</button>

@@ -32,7 +32,9 @@ def test_sync_history_success(session, test_user, test_gmail_account, test_categ
             get_uncat_func,
         )
         
-        assert result == "12346"
+        history_id, processed_count = result
+        assert history_id == "12346"
+        assert processed_count == 1
         assert test_gmail_account.last_history_id == "12346"
 
 
@@ -47,7 +49,7 @@ def test_sync_history_invalid_history_id(session, test_user, test_gmail_account,
         error_response, b"startHistoryId is invalid"
     )
     
-    with patch("app.history_sync.fallback_query_sync", return_value="99999") as mock_fallback:
+    with patch("app.history_sync.fallback_query_sync", return_value=("99999", 1)) as mock_fallback:
         with patch("app.gmail_watch.setup_gmail_watch"):
             def get_uncat_func(sess, user, gmail_account):
                 return test_category
@@ -62,7 +64,9 @@ def test_sync_history_invalid_history_id(session, test_user, test_gmail_account,
                 get_uncat_func,
             )
             
-            assert result == "99999"
+            history_id, processed_count = result
+            assert history_id == "99999"
+            assert processed_count == 1
             mock_fallback.assert_called_once()
 
 
@@ -86,4 +90,6 @@ def test_fallback_query_sync(session, test_user, test_gmail_account, test_catego
                 get_uncat_func,
             )
             
-            assert result == "99999"
+            history_id, processed_count = result
+            assert history_id == "99999"
+            assert processed_count == 1
