@@ -343,16 +343,21 @@ def disconnect_account(
     if request.session.get(ACTIVE_GMAIL_KEY) == account_id:
         del request.session[ACTIVE_GMAIL_KEY]
 
+    email_records = session.exec(
+        select(EmailRecord).where(EmailRecord.gmail_account_id == account_id)
+    ).all()
+    email_count = len(email_records)
+
+    for email_record in email_records:
+        email_record.category_id = None
+        session.add(email_record)
+    session.commit()
+
     categories = session.exec(
         select(Category).where(Category.gmail_account_id == account_id)
     ).all()
     for category in categories:
         session.delete(category)
-
-    email_records = session.exec(
-        select(EmailRecord).where(EmailRecord.gmail_account_id == account_id)
-    ).all()
-    email_count = len(email_records)
 
     for email_record in email_records:
         session.delete(email_record)
