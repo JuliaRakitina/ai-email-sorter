@@ -139,7 +139,10 @@ Full email content display with HTML rendering, unsubscribe status details, and 
 ### Unsubscribe Status
 Real-time status updates with color-coded badges (success, attempted, manual required, failed) and detailed notifications showing method, URL, and error information.
 
-*Note: Screenshots can be added here to showcase the dark theme, responsive layout, and key features.*
+<img width="1138" height="705" alt="image" src="https://github.com/user-attachments/assets/fcc6cf8c-9000-4d9f-9f77-9392e30ce24b" />
+<img width="1372" height="696" alt="image" src="https://github.com/user-attachments/assets/10399dc4-61f6-438e-8b99-5dba6eb61dc7" />
+<img width="1253" height="745" alt="image" src="https://github.com/user-attachments/assets/c8b3a01a-e422-4eab-9cf5-944b594d9de4" />
+<img width="1299" height="863" alt="image" src="https://github.com/user-attachments/assets/08d6dd46-ad79-4d98-841b-95ff7bae536b" />
 
 ---
 
