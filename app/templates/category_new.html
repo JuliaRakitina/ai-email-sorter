@@ -1,20 +1,29 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="card shadow-sm">
-  <div class="card-body">
-    <h3 class="card-title">New Category</h3>
-    <form method="post" action="/categories/new">
-      <div class="mb-3">
-        <label class="form-label">Name</label>
-        <input name="name" class="form-control" required maxlength="80"/>
-      </div>
-      <div class="mb-3">
-        <label class="form-label">Description (used by AI)</label>
-        <textarea name="description" class="form-control" rows="4" required></textarea>
-      </div>
-      <button class="btn btn-success">Create</button>
-      <a class="btn btn-link" href="/">Cancel</a>
-    </form>
-  </div>
+<div class="page-header">
+    <div>
+        <h1 class="page-title">New Category</h1>
+        <p class="page-subtitle">Create a new email category</p>
+    </div>
+    <a href="/" class="btn btn-link">← Back to Dashboard</a>
+</div>
+
+<div class="card" style="max-width: 600px;">
+    <div class="card-body">
+        <form method="post" action="/categories/new">
+            <div class="form-group">
+                <label for="name" class="form-label">Category Name</label>
+                <input type="text" class="form-control" id="name" name="name" required placeholder="e.g., Work, Personal, Shopping">
+            </div>
+            <div class="form-group">
+                <label for="description" class="form-label">Description</label>
+                <textarea class="form-control" id="description" name="description" rows="3" placeholder="Brief description of what emails belong in this category"></textarea>
+            </div>
+            <div class="action-buttons" style="margin-top: 2rem;">
+                <button type="submit" class="btn btn-primary">Create Category</button>
+                <a href="/" class="btn btn-secondary">Cancel</a>
+            </div>
+        </form>
+    </div>
 </div>
 {% endblock %}

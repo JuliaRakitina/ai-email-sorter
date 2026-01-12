@@ -1,37 +1,49 @@
 {% extends "base.html" %}
 {% block content %}
-<a class="btn btn-link mb-2" href="/categories/{{ category_id }}">← Back to category</a>
-<div class="card shadow-sm">
-  <div class="card-body">
-    <div class="d-flex justify-content-between align-items-start mb-2">
-      <h3 class="card-title mb-1">{{ email.subject or "(no subject)" }}</h3>
-      {% if email.unsubscribed_at %}
-        <span class="badge bg-success fs-6" title="Unsubscribed on {{ email.unsubscribed_at }}">✓ Unsubscribed</span>
-      {% endif %}
-    </div>
-    <div class="text-muted mb-3">From: {{ email.from_email or "" }} • Received: {{ email.received_at or "" }}</div>
-    {% if email.unsubscribed_at %}
-      <div class="alert alert-success mb-3">
-        <strong>✓ Unsubscribed:</strong> This email was unsubscribed on {{ email.unsubscribed_at }}.
-        {% if email.summary and "[Unsubscribe]" in email.summary %}
-          <div class="mt-2">
-            <strong>Details:</strong>
-            <div class="small" style="white-space:pre-wrap;">{{ email.summary.split("[Unsubscribe]")[-1].strip() }}</div>
-          </div>
+<div class="page-header">
+    <div>
+        <h3 class="page-title">{{ email.subject or "(no subject)" }}</h3>
+        {% if email.unsubscribed_at %}
+            <span class="badge bg-success" style="margin-top: 0.5rem;">✓ Unsubscribed</span>
         {% endif %}
-      </div>
-    {% endif %}
-    <h6>AI Summary</h6>
-    <div class="mb-3" style="white-space:pre-wrap;">{{ email.summary or "" }}</div>
+    </div>
+    <a href="/categories/{{ category_id }}" class="btn btn-link">← Back to category</a>
+</div>
 
-    <hr/>
-    <h6>Original Contents</h6>
-    {% if email.body_html %}
-      <iframe style="width:100%; height:520px; border:1px solid #ddd; border-radius:8px;"
-              srcdoc="{{ email.body_html | e }}"></iframe>
-    {% else %}
-      <pre style="white-space:pre-wrap;">{{ email.body_text or "" }}</pre>
-    {% endif %}
-  </div>
+<div class="card">
+    <div class="card-body">
+        <div style="margin-bottom: 1.5rem; padding-bottom: 1.5rem; border-bottom: 1px solid var(--border-color);">
+            <div style="display: grid; grid-template-columns: auto 1fr; gap: 1rem; margin-bottom: 0.75rem;">
+                <strong style="color: var(--text-secondary);">From:</strong>
+                <span>{{ email.from_email or "" }}</span>
+            </div>
+            <div style="display: grid; grid-template-columns: auto 1fr; gap: 1rem;">
+                <strong style="color: var(--text-secondary);">Received:</strong>
+                <span>{{ email.received_at or "" }}</span>
+            </div>
+        </div>
+        
+        {% if email.unsubscribed_at %}
+            <div class="alert alert-success" style="margin-bottom: 1.5rem;">
+                <strong>✓ Unsubscribed:</strong> This email was unsubscribed on {{ email.unsubscribed_at }}.
+                {% if email.summary and "[Unsubscribe]" in email.summary %}
+                    <div style="margin-top: 0.75rem;">
+                        <strong>Details:</strong>
+                        <div style="white-space:pre-wrap; font-size: 0.9rem; margin-top: 0.5rem;">{{ email.summary.split("[Unsubscribe]")[-1].strip() }}</div>
+                    </div>
+                {% endif %}
+            </div>
+        {% endif %}
+        
+        <div style="margin-bottom: 2rem;">
+            <h4 style="margin-bottom: 1rem; color: var(--text-secondary); font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em;">Email Body</h4>
+            <div class="email-body">{{ email.body_text or email.snippet or "" }}</div>
+        </div>
+        
+        <div>
+            <h4 style="margin-bottom: 1rem; color: var(--text-secondary); font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em;">AI Summary</h4>
+            <div style="white-space: pre-wrap; line-height: 1.8; color: var(--text-primary);">{{ email.summary or "No summary available." }}</div>
+        </div>
+    </div>
 </div>
 {% endblock %}

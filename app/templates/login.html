@@ -1,18 +1,21 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="row justify-content-center">
-  <div class="col-md-6">
-    <div class="card shadow-sm">
-      <div class="card-body">
-        <h3 class="card-title mb-3">Sign in</h3>
-        <p class="text-muted">Connect Gmail to auto-sort and archive emails.</p>
-        <a class="btn btn-primary" href="/auth/google">Sign in with Google</a>
-        <hr/>
-        <small class="text-muted">
-          OAuth test user to add: <b>{{ test_user }}</b>
-        </small>
-      </div>
+<div class="login-container">
+    <div class="login-card">
+        <h1 class="login-title">Jump Email Sorter</h1>
+        <p class="login-subtitle">AI-powered email organization for Gmail</p>
+        <div style="text-align: center;">
+            <a href="/auth/google" class="btn btn-primary" style="font-size: 1.1rem; padding: 0.75rem 2rem;">
+                Sign in with Google
+            </a>
+        </div>
+        {% if test_user %}
+        <div style="margin-top: 2rem; padding-top: 2rem; border-top: 1px solid var(--border-color);">
+            <p class="text-muted" style="text-align: center; font-size: 0.875rem;">
+                Test user: <strong>{{ test_user }}</strong>
+            </p>
+        </div>
+        {% endif %}
     </div>
-  </div>
 </div>
 {% endblock %}

@@ -8,6 +8,7 @@ from urllib.parse import quote
 import httpx
 from fastapi import FastAPI, Request, Depends, Form, HTTPException
 from fastapi.responses import RedirectResponse, HTMLResponse, Response
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.status import HTTP_303_SEE_OTHER
 from sqlmodel import Session, select, func
@@ -40,6 +41,12 @@ from .pubsub_webhook import verify_pubsub_jwt, parse_pubsub_message
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title=settings.APP_NAME)
+
+try:
+    app.mount("/static", StaticFiles(directory="app/static"), name="static")
+except Exception:
+    pass
+
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.SECRET_KEY,

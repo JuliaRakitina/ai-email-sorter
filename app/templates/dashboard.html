@@ -1,76 +1,102 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h2 class="mb-0">Dashboard</h2>
-  <div class="d-flex gap-2">
-    <form method="post" action="/sync">
-      <button class="btn btn-outline-primary">Sync New Emails</button>
-    </form>
-    <a class="btn btn-success" href="/categories/new">+ Add Category</a>
-  </div>
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Dashboard</h1>
+        <p class="page-subtitle">Manage your email categories and Gmail accounts</p>
+    </div>
+    <div class="action-buttons">
+        <a href="/categories/new" class="btn btn-primary">+ Add Category</a>
+        <form method="post" action="/sync" style="display: inline;">
+            <button type="submit" class="btn btn-secondary">Sync New Emails</button>
+        </form>
+    </div>
 </div>
 
-<div class="row g-3">
-  <div class="col-md-4">
-    <div class="card shadow-sm">
-      <div class="card-body">
-        <h5>Connected Gmail Accounts</h5>
-        <ul class="list-group mb-3">
-          {% for ga in gmail_accounts %}
-            <li class="list-group-item d-flex justify-content-between align-items-center">
-              <div class="flex-grow-1">
-                <div class="fw-semibold">
-                  {{ ga.email }}
-                  {% if active_gmail_id == ga.id %}
-                    <span class="badge bg-success ms-2">Active</span>
-                  {% endif %}
-                </div>
-                <small class="text-muted">{% if ga.last_sync_at %}last sync: {{ ga.last_sync_at }}{% else %}never synced{% endif %}</small>
-              </div>
-              <div class="d-flex gap-1">
-                {% if active_gmail_id != ga.id %}
-                  <form method="post" action="/accounts/{{ ga.id }}/select">
-                    <button type="submit" class="btn btn-outline-primary btn-sm">Select</button>
-                  </form>
+<div class="dashboard-grid">
+    <div>
+        <div class="card">
+            <div class="card-header">
+                Connected Gmail Accounts
+            </div>
+            <div class="card-body">
+                {% if gmail_accounts %}
+                    <ul class="gmail-accounts-list">
+                        {% for ga in gmail_accounts %}
+                        <li class="gmail-account-item {% if active_gmail_id == ga.id %}active{% endif %}">
+                            <div class="gmail-account-info">
+                                <div class="gmail-account-email">
+                                    {{ ga.email }}
+                                    {% if active_gmail_id == ga.id %}
+                                        <span class="active-badge ms-2">Active</span>
+                                    {% endif %}
+                                </div>
+                                <div class="gmail-account-meta">
+                                    {% if ga.last_sync_at %}
+                                        Last sync: {{ ga.last_sync_at.strftime('%Y-%m-%d %H:%M') }}
+                                    {% else %}
+                                        Never synced
+                                    {% endif %}
+                                </div>
+                            </div>
+                            <div class="gmail-account-actions">
+                                {% if active_gmail_id != ga.id %}
+                                <form method="post" action="/accounts/{{ ga.id }}/select" style="display: inline;">
+                                    <button type="submit" class="btn btn-primary btn-sm">Select</button>
+                                </form>
+                                {% endif %}
+                                <form method="post" action="/accounts/{{ ga.id }}/disconnect" style="display: inline;" onsubmit="return confirm('Disconnect this Gmail account?')">
+                                    <button type="submit" class="btn btn-danger btn-sm">Disconnect</button>
+                                </form>
+                            </div>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                {% else %}
+                    <p class="text-muted">No Gmail accounts connected.</p>
                 {% endif %}
-                <form method="post" action="/accounts/{{ ga.id }}/disconnect" onsubmit="return confirm('Disconnect this Gmail account? All email records for this account will be deleted.');">
-                  <button type="submit" class="btn btn-outline-danger btn-sm">Disconnect</button>
-                </form>
-              </div>
-            </li>
-          {% else %}
-            <li class="list-group-item text-muted">No accounts connected</li>
-          {% endfor %}
-        </ul>
-        <a class="btn btn-outline-secondary btn-sm" href="/auth/google?mode=connect">Connect another Gmail</a>
-      </div>
-    </div>
-  </div>
-
-  <div class="col-md-8">
-    <div class="card shadow-sm">
-      <div class="card-body">
-        <h5>Categories</h5>
-        <div class="list-group">
-          {% for c in categories %}
-            <a class="list-group-item list-group-item-action d-flex justify-content-between align-items-center" href="/categories/{{ c.id }}">
-              <div>
-                <div class="fw-semibold">
-                  {{ c.name }}
-                  {% if c.is_system %}
-                    <span class="badge bg-secondary ms-1">System</span>
-                  {% endif %}
+                <div style="margin-top: 1rem;">
+                    <a href="/auth/google?mode=connect" class="btn btn-secondary btn-sm">+ Connect another Gmail</a>
                 </div>
-                <small class="text-muted">{{ c.description }}</small>
-              </div>
-              <span class="badge text-bg-secondary">{{ counts.get(c.id, 0) }}</span>
-            </a>
-          {% else %}
-            <div class="text-muted">No categories yet. Add one to start sorting.</div>
-          {% endfor %}
+            </div>
         </div>
-      </div>
     </div>
-  </div>
+
+    <div>
+        <div class="card">
+            <div class="card-header">
+                Categories
+            </div>
+            <div class="card-body">
+                {% if categories %}
+                    <ul class="category-list">
+                        {% for cat in categories %}
+                        <li class="category-item">
+                            <div class="category-info">
+                                <div class="category-name">
+                                    {{ cat.name }}
+                                    {% if cat.is_system %}
+                                        <span class="system-badge ms-2">System</span>
+                                    {% endif %}
+                                </div>
+                                {% if cat.description %}
+                                <div class="category-description">{{ cat.description }}</div>
+                                {% endif %}
+                                <div class="category-meta">
+                                    <span class="email-count-badge">{{ counts.get(cat.id, 0) }} emails</span>
+                                </div>
+                            </div>
+                            <div>
+                                <a href="/categories/{{ cat.id }}" class="btn btn-secondary btn-sm">View</a>
+                            </div>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                {% else %}
+                    <p class="text-muted">No categories yet. Create one to get started!</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
 </div>
 {% endblock %}
