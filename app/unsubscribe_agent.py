@@ -4,14 +4,16 @@ import re
 from typing import Optional, Tuple
 from dataclasses import dataclass
 from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class UnsubLink:
-    kind: str
-    value: str
+class UnsubscribeTarget:
+    url: str
+    has_one_click: bool
+    source: str
 
 
 def parse_list_unsubscribe(headers: dict) -> Tuple[Optional[str], bool]:
@@ -117,13 +119,9 @@ def attempt_form_unsubscribe(http_client, unsubscribe_url: str) -> Tuple[bool, s
             if form_action.startswith("http"):
                 submit_url = form_action
             elif form_action.startswith("/"):
-                from urllib.parse import urljoin
-
                 base_url = "/".join(unsubscribe_url.split("/")[:3])
                 submit_url = urljoin(base_url, form_action)
             else:
-                from urllib.parse import urljoin
-
                 submit_url = urljoin(unsubscribe_url, form_action)
         else:
             submit_url = unsubscribe_url
@@ -214,37 +212,100 @@ def attempt_form_unsubscribe(http_client, unsubscribe_url: str) -> Tuple[bool, s
         return False, error_msg
 
 
+def find_unsubscribe_links_in_html(html: str) -> list[str]:
+    if not html:
+        return []
+    soup = BeautifulSoup(html, "html.parser")
+    links = []
+    for a in soup.find_all("a", href=True):
+        href = a.get("href", "").lower()
+        text = a.get_text().lower()
+        if "unsubscribe" in href or "unsubscribe" in text:
+            full_url = a.get("href")
+            if full_url and full_url.startswith("http"):
+                links.append(full_url)
+    return links
+
+
+def discover_unsubscribe_target(
+    headers: dict, html: str
+) -> Optional[UnsubscribeTarget]:
+    unsubscribe_url, has_one_click = parse_list_unsubscribe(headers)
+    if unsubscribe_url:
+        return UnsubscribeTarget(
+            url=unsubscribe_url, has_one_click=has_one_click, source="header_link"
+        )
+
+    html_links = find_unsubscribe_links_in_html(html)
+    if html_links:
+        return UnsubscribeTarget(
+            url=html_links[0], has_one_click=False, source="body_link"
+        )
+
+    return None
+
+
+def attempt_unsubscribe(
+    http_client, target: UnsubscribeTarget, email_from: Optional[str] = None
+) -> Tuple[str, str, Optional[str]]:
+    status = "failed"
+    method = target.source
+    error = None
+
+    try:
+        if target.has_one_click:
+            method = "one_click"
+            success, msg = attempt_one_click_unsubscribe(http_client, target.url)
+            if success:
+                status = "success"
+            else:
+                status = "attempted"
+                error = msg
+        else:
+            if target.source == "header_link":
+                method = "header_link"
+            elif target.source == "body_link":
+                method = "body_link"
+            else:
+                method = "html_form"
+
+            success, msg = attempt_form_unsubscribe(http_client, target.url)
+            if success:
+                status = "success"
+            else:
+                if "error:" in msg.lower() or "exception" in msg.lower():
+                    status = "failed"
+                elif "No unsubscribe form found" in msg or "Failed to fetch" in msg:
+                    status = "manual_required"
+                else:
+                    status = "attempted"
+                error = msg
+    except Exception as e:
+        error = str(e)
+        status = "failed"
+        logger.error(f"Unsubscribe exception: {e}", exc_info=True)
+
+    return status, method, error
+
+
 def best_effort_unsubscribe(http_client, headers: dict, html: str) -> Tuple[bool, str]:
     print("\n" + "=" * 70)
     print("[Unsubscribe] Starting unsubscribe process...")
     print("=" * 70)
     logger.info("Starting unsubscribe process")
 
-    unsubscribe_url, has_one_click = parse_list_unsubscribe(headers)
-
-    if not unsubscribe_url:
-        msg = "No unsubscribe URL found in headers"
+    target = discover_unsubscribe_target(headers, html)
+    if not target:
+        msg = "No unsubscribe URL found"
         print(f"[Unsubscribe] ✗ {msg}")
         print("=" * 70 + "\n")
         return False, msg
 
-    if has_one_click:
-        print("[Unsubscribe] Trying one-click unsubscribe method first...")
-        success, msg = attempt_one_click_unsubscribe(http_client, unsubscribe_url)
-        if success:
-            print("=" * 70)
-            print(f"[Unsubscribe] ✓ SUCCESS: {msg}")
-            print("=" * 70 + "\n")
-            return True, msg
-        print("[Unsubscribe] One-click failed, falling back to form method...")
-        logger.info(f"One-click unsubscribe failed, falling back to form: {msg}")
-
-    print("[Unsubscribe] Trying form-based unsubscribe method...")
-    success, msg = attempt_form_unsubscribe(http_client, unsubscribe_url)
+    status, method, error = attempt_unsubscribe(http_client, target)
     print("=" * 70)
-    if success:
-        print(f"[Unsubscribe] ✓ SUCCESS: {msg}")
+    if status == "success":
+        print(f"[Unsubscribe] ✓ SUCCESS: {method}")
     else:
-        print(f"[Unsubscribe] ✗ FAILED: {msg}")
+        print(f"[Unsubscribe] ✗ FAILED: {status} - {error or 'Unknown error'}")
     print("=" * 70 + "\n")
-    return success, msg
+    return status == "success", error or f"Status: {status}"

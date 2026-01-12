@@ -23,13 +23,32 @@
             </div>
         </div>
         
-        {% if email.unsubscribed_at %}
-            <div class="alert alert-success" style="margin-bottom: 1.5rem;">
-                <strong>✓ Unsubscribed:</strong> This email was unsubscribed on {{ email.unsubscribed_at }}.
-                {% if email.summary and "[Unsubscribe]" in email.summary %}
-                    <div style="margin-top: 0.75rem;">
-                        <strong>Details:</strong>
-                        <div style="white-space:pre-wrap; font-size: 0.9rem; margin-top: 0.5rem;">{{ email.summary.split("[Unsubscribe]")[-1].strip() }}</div>
+        {% if email.unsubscribe_status or email.unsubscribed_at %}
+            <div class="alert {% if email.unsubscribe_status == 'success' or email.unsubscribed_at %}alert-success{% elif email.unsubscribe_status == 'attempted' %}alert-warning{% elif email.unsubscribe_status == 'manual_required' %}alert-info{% elif email.unsubscribe_status == 'failed' %}alert-danger{% else %}alert-info{% endif %}" style="margin-bottom: 1.5rem;">
+                {% if email.unsubscribe_status == "success" or email.unsubscribed_at %}
+                    <strong>✓ Unsubscribed:</strong> This email was unsubscribed on {{ email.unsubscribed_at or "N/A" }}.
+                {% elif email.unsubscribe_status == "attempted" %}
+                    <strong>⚠ Attempted:</strong> Unsubscribe was attempted but success could not be confirmed.
+                {% elif email.unsubscribe_status == "manual_required" %}
+                    <strong>ℹ Manual Required:</strong> This email requires manual unsubscribe action.
+                {% elif email.unsubscribe_status == "failed" %}
+                    <strong>✗ Failed:</strong> Unsubscribe attempt failed.
+                {% else %}
+                    <strong>Unsubscribe Status:</strong> {{ email.unsubscribe_status or "Unknown" }}
+                {% endif %}
+                {% if email.unsubscribe_method %}
+                    <div style="margin-top: 0.5rem;">
+                        <strong>Method:</strong> {{ email.unsubscribe_method }}
+                    </div>
+                {% endif %}
+                {% if email.unsubscribe_url %}
+                    <div style="margin-top: 0.5rem;">
+                        <strong>Unsubscribe URL:</strong> <a href="{{ email.unsubscribe_url }}" target="_blank" rel="noopener noreferrer">{{ email.unsubscribe_url }}</a>
+                    </div>
+                {% endif %}
+                {% if email.unsubscribe_error %}
+                    <div style="margin-top: 0.5rem;">
+                        <strong>Error:</strong> <span style="font-size: 0.9rem;">{{ email.unsubscribe_error }}</span>
                     </div>
                 {% endif %}
             </div>
@@ -37,7 +56,13 @@
         
         <div style="margin-bottom: 2rem;">
             <h4 style="margin-bottom: 1rem; color: var(--text-secondary); font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em;">Email Body</h4>
-            <div class="email-body">{{ email.body_text or email.snippet or "" }}</div>
+            {% if email.body_html %}
+                <div class="email-body" style="overflow-x: auto;">
+                    {{ email.body_html | safe }}
+                </div>
+            {% else %}
+                <div class="email-body">{{ email.body_text or email.snippet or "" }}</div>
+            {% endif %}
         </div>
         
         <div>

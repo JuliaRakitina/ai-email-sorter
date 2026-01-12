@@ -6,8 +6,8 @@ from typing import Optional, List
 from urllib.parse import quote
 
 import httpx
-from fastapi import FastAPI, Request, Depends, Form, HTTPException
-from fastapi.responses import RedirectResponse, HTMLResponse, Response
+from fastapi import FastAPI, Request, Depends, Form, HTTPException, BackgroundTasks
+from fastapi.responses import RedirectResponse, HTMLResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.status import HTTP_303_SEE_OTHER
@@ -32,7 +32,11 @@ from .gmail_service import (
     list_message_ids,
     trash_message,
 )
-from .unsubscribe_agent import best_effort_unsubscribe
+from .unsubscribe_agent import (
+    discover_unsubscribe_target,
+    attempt_unsubscribe,
+    UnsubscribeTarget,
+)
 from .gmail_watch import setup_gmail_watch
 from .history_sync import sync_history
 from .email_processor import process_email_messages
@@ -461,7 +465,9 @@ def sync_now(request: Request, session: Session = Depends(get_session)):
     if uncategorized.id not in [c.id for c in categories]:
         categories.append(uncategorized)
 
-    process_email_messages(gmail, ga, ids, categories, session, user, get_or_create_uncategorized)
+    process_email_messages(
+        gmail, ga, ids, categories, session, user, get_or_create_uncategorized
+    )
 
     ga.last_sync_at = datetime.utcnow()
     session.add(ga)
@@ -498,13 +504,7 @@ def category_detail(
         .limit(200)
     ).all()
 
-    unsubscribe_results = None
-    unsubscribe_results_json = request.query_params.get("unsubscribe_results")
-    if unsubscribe_results_json:
-        try:
-            unsubscribe_results = json.loads(unsubscribe_results_json)
-        except Exception:
-            pass
+    unsubscribe_started = request.query_params.get("unsubscribe_started") == "true"
 
     return render(
         request,
@@ -512,15 +512,128 @@ def category_detail(
         user=user,
         category=category,
         emails=emails,
-        unsubscribe_results=unsubscribe_results,
+        unsubscribe_started=unsubscribe_started,
         flash=None,
     )
+
+
+def process_unsubscribe_background(email_id: int, category_id: int):
+    from .db import engine
+
+    with Session(engine) as session:
+        try:
+            rec = session.get(EmailRecord, email_id)
+            if not rec or rec.category_id != category_id:
+                return
+
+            ga = session.get(GmailAccount, rec.gmail_account_id)
+            if not ga:
+                return
+
+            logger.info(
+                f"Processing unsubscribe for email {rec.id} from {rec.from_email}"
+            )
+            print(
+                f"\n[Unsubscribe] Processing unsubscribe for email ID {rec.id} from {rec.from_email}"
+            )
+
+            try:
+                gmail, updated_token_enc = build_gmail_service_from_enc(
+                    ga.token_json_enc
+                )
+                ga.token_json_enc = updated_token_enc
+                session.add(ga)
+                session.commit()
+
+                msg = (
+                    gmail.users()
+                    .messages()
+                    .get(
+                        userId="me",
+                        id=rec.gmail_message_id,
+                        format="metadata",
+                        metadataHeaders=["List-Unsubscribe", "List-Unsubscribe-Post"],
+                    )
+                    .execute()
+                )
+                headers = extract_headers(msg)
+                body_html = rec.body_html
+
+                if not headers.get("list-unsubscribe") and not body_html:
+                    full = (
+                        gmail.users()
+                        .messages()
+                        .get(userId="me", id=rec.gmail_message_id, format="full")
+                        .execute()
+                    )
+                    headers = extract_headers(full)
+                    body_text, body_html = extract_bodies(full)
+
+                print(
+                    f"[Unsubscribe] Extracted headers, found {len(headers)} header(s)"
+                )
+
+                target = discover_unsubscribe_target(headers, body_html or "")
+
+                if not target:
+                    rec.unsubscribe_status = "failed"
+                    rec.unsubscribe_method = None
+                    rec.unsubscribe_url = None
+                    rec.unsubscribe_error = "No unsubscribe URL found"
+                    session.add(rec)
+                    session.commit()
+                    logger.warning(f"No unsubscribe target found for email {rec.id}")
+                    return
+
+                rec.unsubscribe_url = target.url
+                session.add(rec)
+                session.commit()
+
+                with httpx.Client(headers={"User-Agent": "Mozilla/5.0"}) as client:
+                    status, method, error = attempt_unsubscribe(
+                        client, target, rec.from_email
+                    )
+
+                rec.unsubscribe_status = status
+                rec.unsubscribe_method = method
+                rec.unsubscribe_error = error
+
+                if status == "success":
+                    rec.unsubscribed_at = datetime.utcnow()
+                    logger.info(f"Unsubscribe successful for email {rec.id}: {method}")
+                    print(
+                        f"[Unsubscribe] ✓ Successfully unsubscribed! Method: {method}, Timestamp: {rec.unsubscribed_at}"
+                    )
+                else:
+                    logger.warning(f"Unsubscribe {status} for email {rec.id}: {error}")
+                    print(
+                        f"[Unsubscribe] Status: {status}, Method: {method}, Error: {error}"
+                    )
+
+                session.add(rec)
+                session.commit()
+            except Exception as e:
+                error_msg = f"Error during unsubscribe: {str(e)}"
+                logger.error(
+                    f"Unsubscribe error for email {rec.id}: {e}", exc_info=True
+                )
+                print(f"[Unsubscribe] ✗ ERROR: {error_msg}")
+                rec.unsubscribe_status = "failed"
+                rec.unsubscribe_error = error_msg
+                session.add(rec)
+                session.commit()
+        except Exception as e:
+            logger.error(
+                f"Background unsubscribe task error for email {email_id}: {e}",
+                exc_info=True,
+            )
 
 
 @app.post("/categories/{category_id}/bulk")
 def category_bulk(
     category_id: int,
     request: Request,
+    background_tasks: BackgroundTasks,
     action: str = Form(...),
     email_ids: Optional[List[int]] = Form(None),
     session: Session = Depends(get_session),
@@ -539,85 +652,73 @@ def category_bulk(
     if not category or category.user_id != user.id:
         return RedirectResponse("/", status_code=HTTP_303_SEE_OTHER)
 
-    unsubscribe_results = []
-    for eid in email_ids:
-        rec = session.get(EmailRecord, eid)
-        if not rec or rec.category_id != category_id:
-            continue
-        ga = session.get(GmailAccount, rec.gmail_account_id)
-        if not ga:
-            continue
-        gmail, updated_token_enc = build_gmail_service_from_enc(ga.token_json_enc)
-        ga.token_json_enc = updated_token_enc
-        session.add(ga)
-        session.commit()
-
-        if action == "delete":
+    if action == "delete":
+        for eid in email_ids:
+            rec = session.get(EmailRecord, eid)
+            if not rec or rec.category_id != category_id:
+                continue
+            ga = session.get(GmailAccount, rec.gmail_account_id)
+            if not ga:
+                continue
+            gmail, updated_token_enc = build_gmail_service_from_enc(ga.token_json_enc)
+            ga.token_json_enc = updated_token_enc
+            session.add(ga)
+            session.commit()
             trash_message(gmail, "me", rec.gmail_message_id)
             rec.deleted_at = datetime.utcnow()
             session.add(rec)
             session.commit()
 
-        elif action == "unsubscribe":
-            logger.info(f"Processing unsubscribe for email {rec.id} from {rec.from_email}")
-            print(f"\n[Unsubscribe] Processing unsubscribe for email ID {rec.id} from {rec.from_email}")
-            try:
-                full = (
-                    gmail.users()
-                    .messages()
-                    .get(userId="me", id=rec.gmail_message_id, format="full")
-                    .execute()
-                )
-                headers = extract_headers(full)
-                body_text, body_html = extract_bodies(full)
-                print(f"[Unsubscribe] Extracted headers, found {len(headers)} header(s)")
-                
-                with httpx.Client() as client:
-                    ok, msg = best_effort_unsubscribe(client, headers, body_html or "")
-                
-                if ok:
-                    rec.unsubscribed_at = datetime.utcnow()
-                    logger.info(f"Unsubscribe successful for email {rec.id}: {msg}")
-                    print(f"[Unsubscribe] ✓ Successfully unsubscribed! Timestamp set: {rec.unsubscribed_at}")
-                    unsubscribe_results.append({
-                        "email": rec.from_email or "Unknown",
-                        "subject": rec.subject or "(no subject)",
-                        "success": True,
-                        "message": msg
-                    })
-                else:
-                    logger.warning(f"Unsubscribe failed for email {rec.id}: {msg}")
-                    print(f"[Unsubscribe] ✗ Unsubscribe failed: {msg}")
-                    unsubscribe_results.append({
-                        "email": rec.from_email or "Unknown",
-                        "subject": rec.subject or "(no subject)",
-                        "success": False,
-                        "message": msg
-                    })
-                
-                session.add(rec)
-                session.commit()
-            except Exception as e:
-                error_msg = f"Error during unsubscribe: {str(e)}"
-                logger.error(f"Unsubscribe error for email {rec.id}: {e}", exc_info=True)
-                print(f"[Unsubscribe] ✗ ERROR: {error_msg}")
-                unsubscribe_results.append({
-                    "email": rec.from_email or "Unknown",
-                    "subject": rec.subject or "(no subject)",
-                    "success": False,
-                    "message": error_msg
-                })
-                session.add(rec)
-                session.commit()
-
-    if action == "unsubscribe" and unsubscribe_results:
-        results_json = json.dumps(unsubscribe_results)
-        redirect_url = f"/categories/{category_id}?unsubscribe_results={quote(results_json)}"
-        return RedirectResponse(redirect_url, status_code=HTTP_303_SEE_OTHER)
+    elif action == "unsubscribe":
+        for eid in email_ids:
+            background_tasks.add_task(process_unsubscribe_background, eid, category_id)
+        return RedirectResponse(
+            f"/categories/{category_id}?unsubscribe_started=true",
+            status_code=HTTP_303_SEE_OTHER,
+        )
 
     return RedirectResponse(
         f"/categories/{category_id}", status_code=HTTP_303_SEE_OTHER
     )
+
+
+@app.get("/api/categories/{category_id}/unsubscribe-status")
+def get_unsubscribe_status(
+    category_id: int, request: Request, session: Session = Depends(get_session)
+):
+    user = get_current_user(request, session)
+    if not user:
+        return JSONResponse(content={"error": "Unauthorized"}, status_code=401)
+
+    category = session.get(Category, category_id)
+    if not category or category.user_id != user.id:
+        return JSONResponse(content={"error": "Not found"}, status_code=404)
+
+    emails = session.exec(
+        select(EmailRecord)
+        .where(EmailRecord.category_id == category_id)
+        .where(EmailRecord.deleted_at.is_(None))
+        .order_by(EmailRecord.received_at.desc().nullslast())
+        .limit(200)
+    ).all()
+
+    statuses = []
+    for e in emails:
+        if e.unsubscribe_status or e.unsubscribed_at:
+            statuses.append(
+                {
+                    "id": e.id,
+                    "unsubscribe_status": e.unsubscribe_status,
+                    "unsubscribe_method": e.unsubscribe_method,
+                    "unsubscribe_url": e.unsubscribe_url,
+                    "unsubscribe_error": e.unsubscribe_error,
+                    "unsubscribed_at": (
+                        e.unsubscribed_at.isoformat() if e.unsubscribed_at else None
+                    ),
+                }
+            )
+
+    return JSONResponse(content={"statuses": statuses})
 
 
 @app.get("/emails/{email_id}", response_class=HTMLResponse)
@@ -723,5 +824,5 @@ async def pubsub_webhook(request: Request, session: Session = Depends(get_sessio
         return Response(status_code=200)
 
     except Exception as e:
-        logger.error(f"Webhook processing error: {e}")
+        logger.error(f"Webhook processing error: {e}", exc_info=True)
         return Response(status_code=200)

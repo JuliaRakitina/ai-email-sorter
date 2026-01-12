@@ -54,3 +54,7 @@ class EmailRecord(SQLModel, table=True):
     archived_at: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
     unsubscribed_at: Optional[datetime] = None
+    unsubscribe_status: Optional[str] = None
+    unsubscribe_method: Optional[str] = None
+    unsubscribe_url: Optional[str] = None
+    unsubscribe_error: Optional[str] = None
