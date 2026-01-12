@@ -30,7 +30,7 @@ An intelligent email management application that automatically categorizes, summ
 
 ### Automation (Sync + Webhooks)
 - **Real-Time Push Notifications**: Gmail Watch API + Google Pub/Sub for instant email processing
-- **Manual Sync**: On-demand sync button to import recent inbox emails
+- **Manual Sync**: On-demand sync button to import recent inbox emails(Per sync, we pull up to 10 emails from the last 3 days.)
 - **Automatic Watch Renewal**: Gmail watch subscriptions are automatically renewed before expiration
 - **History Sync**: Processes email changes via Gmail history API for reliable state management
 - **Background Processing**: Non-blocking async jobs for email processing and unsubscribe operations
